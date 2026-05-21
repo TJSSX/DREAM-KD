@@ -1,0 +1,68 @@
+# IDE
+.idea/
+.vscode/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+conda-env/
+
+# Data
+data_raw/
+data_processed/
+datasets/
+*.csv
+*.tsv
+*.jsonl
+*.parquet
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# Outputs and checkpoints
+outputs/
+checkpoints/
+models/
+saved_models/
+teacher_logits/
+students/
+teachers/
+results/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# Logs and experiment tracking
+logs/
+*.log
+wandb/
+runs/
+tensorboard/
+lightning_logs/
+
+# Cache
+.cache/
+hf_cache/
+transformers_cache/
+dataset_cache/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
