@@ -1,0 +1,34 @@
+dataset:
+  name: amazon_marc
+  num_labels: 5
+
+  candidates:
+    - hf_name: amazon_reviews_multi
+      hf_config: en
+      text_column: review_body
+      label_column: stars
+      label_offset: 1
+
+    - hf_name: SetFit/amazon_reviews_multi_en
+      hf_config: null
+      text_column: text
+      label_column: label
+      label_offset: 0
+
+split:
+  train_name: train
+  test_name: test
+
+  dev_name: validation
+  dev_size: 0.1
+  seed: 42
+
+output:
+  dir: data_processed/amazon_marc
+
+processing:
+  min_text_length: 5
+
+  max_train_samples: 1000
+  max_dev_samples: 200
+  max_test_samples: 200
