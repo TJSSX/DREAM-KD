@@ -18,8 +18,9 @@ dataset:
 split:
   train_name: train
   test_name: test
-
   dev_name: validation
+
+  # Used only when no validation split exists.
   dev_size: 0.1
   seed: 42
 
@@ -29,6 +30,21 @@ output:
 processing:
   min_text_length: 5
 
-  max_train_samples: 1000
-  max_dev_samples: 200
-  max_test_samples: 200
+sampling:
+  # Options:
+  #   full      = use all available examples
+  #   random    = random sample while keeping natural class imbalance
+  #   balanced  = stratified balanced sample by label
+  strategy: balanced
+  seed: 42
+
+  # Used when strategy = balanced.
+  # If a class has fewer examples than requested, all available examples are used.
+  train_per_class: 1000
+  dev_per_class: 200
+  test_per_class: 200
+
+  # Used when strategy = random.
+  train_size: 5000
+  dev_size: 1000
+  test_size: 1000

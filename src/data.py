@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import yaml
@@ -42,10 +42,8 @@ def get_split(raw_dataset, split_name: Optional[str]):
     """Safely get a dataset split."""
     if split_name is None or str(split_name).lower() == "null":
         return None
-
     if split_name not in raw_dataset:
         return None
-
     return raw_dataset[split_name]
 
 
@@ -55,7 +53,6 @@ def convert_standard_split(
     label_column: str,
     label_offset: int = 0,
     min_text_length: int = 5,
-    max_samples: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Convert a Hugging Face split to a standard DataFrame.
@@ -96,10 +93,161 @@ def convert_standard_split(
             }
         )
 
-        if max_samples is not None and len(rows) >= max_samples:
-            break
-
     return pd.DataFrame(rows)
+
+
+def sample_dataframe(
+    df: pd.DataFrame,
+    split_name: str,
+    sampling_cfg: Dict[str, Any],
+    num_labels: int,
+) -> pd.DataFrame:
+    """
+    Sample a standardized DataFrame.
+
+    Supported strategies:
+        full:
+            Use all examples.
+        random:
+            Randomly sample N examples from the split, preserving natural imbalance.
+        balanced:
+            Stratified balanced sampling, with the same number of examples per class.
+    """
+    strategy = sampling_cfg.get("strategy", "full")
+    seed = int(sampling_cfg.get("seed", 42))
+
+    if strategy is None:
+        strategy = "full"
+
+    strategy = str(strategy).lower()
+
+    if strategy == "full":
+        sampled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        return sampled
+
+    if strategy == "random":
+        size_key = f"{split_name}_size"
+        requested_size = sampling_cfg.get(size_key)
+
+        if requested_size is None or str(requested_size).lower() == "null":
+            sampled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+            return sampled
+
+        requested_size = int(requested_size)
+        actual_size = min(requested_size, len(df))
+
+        sampled = df.sample(n=actual_size, random_state=seed).reset_index(drop=True)
+        return sampled
+
+    if strategy == "balanced":
+        per_class_key = f"{split_name}_per_class"
+        requested_per_class = sampling_cfg.get(per_class_key)
+
+        if requested_per_class is None or str(requested_per_class).lower() == "null":
+            raise ValueError(
+                f"sampling.strategy='balanced' requires '{per_class_key}' in config."
+            )
+
+        requested_per_class = int(requested_per_class)
+
+        sampled_parts = []
+
+        for label in range(num_labels):
+            class_df = df[df["label"] == label]
+
+            if class_df.empty:
+                raise ValueError(
+                    f"No examples found for label={label} in {split_name} split."
+                )
+
+            actual_n = min(requested_per_class, len(class_df))
+
+            if actual_n < requested_per_class:
+                print(
+                    f"[Warning] {split_name} label={label}: "
+                    f"requested {requested_per_class}, but only {len(class_df)} available. "
+                    f"Using {actual_n}."
+                )
+
+            sampled_class_df = class_df.sample(
+                n=actual_n,
+                random_state=seed + label,
+            )
+
+            sampled_parts.append(sampled_class_df)
+
+        sampled = pd.concat(sampled_parts, axis=0)
+        sampled = sampled.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+
+        return sampled
+
+    raise ValueError(
+        f"Unsupported sampling strategy: {strategy}. "
+        f"Choose from ['full', 'random', 'balanced']."
+    )
+
+
+def validate_label_range(df: pd.DataFrame, split_name: str, num_labels: int) -> None:
+    """Validate labels are within [0, num_labels - 1]."""
+    if df.empty:
+        raise ValueError(f"{split_name} split is empty.")
+
+    min_label = int(df["label"].min())
+    max_label = int(df["label"].max())
+
+    if min_label < 0 or max_label >= num_labels:
+        raise ValueError(
+            f"Invalid label range in {split_name}: "
+            f"min={min_label}, max={max_label}, expected [0, {num_labels - 1}]"
+        )
+
+
+def print_label_distribution(df: pd.DataFrame, split_name: str, num_labels: int) -> Dict[str, Any]:
+    """Print and return label distribution for one split."""
+    counts = df["label"].value_counts().sort_index()
+
+    print("=" * 80)
+    print(f"{split_name.upper()} split")
+    print(f"Total examples: {len(df):,}")
+    print("-" * 80)
+
+    distribution = {}
+
+    for label in range(num_labels):
+        count = int(counts.get(label, 0))
+        ratio = count / len(df) if len(df) > 0 else 0.0
+        distribution[str(label)] = {
+            "count": count,
+            "ratio": ratio,
+        }
+        print(f"label {label}: {count:,} ({ratio:.4%})")
+
+    return {
+        "num_examples": int(len(df)),
+        "label_distribution": distribution,
+    }
+
+
+def build_dataset_stats(
+    train_df: pd.DataFrame,
+    dev_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    num_labels: int,
+    selected_source: str,
+    sampling_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build dataset statistics and print label distributions."""
+    stats = {
+        "selected_source": selected_source,
+        "sampling": sampling_cfg,
+        "splits": {},
+    }
+
+    stats["splits"]["train"] = print_label_distribution(train_df, "train", num_labels)
+    stats["splits"]["dev"] = print_label_distribution(dev_df, "dev", num_labels)
+    stats["splits"]["test"] = print_label_distribution(test_df, "test", num_labels)
+
+    return stats
 
 
 def try_load_amazon_candidate(candidate: Dict[str, Any]):
@@ -119,7 +267,7 @@ def try_load_amazon_candidate(candidate: Dict[str, Any]):
     return raw_dataset
 
 
-def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
     Prepare Amazon MARC English 5-class review classification data.
 
@@ -128,10 +276,14 @@ def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
 
     Expected output:
         train_df, dev_df, test_df with columns: text, label
+        dataset_stats
     """
     dataset_cfg = config["dataset"]
     split_cfg = config["split"]
     processing_cfg = config.get("processing", {})
+    sampling_cfg = config.get("sampling", {"strategy": "full"})
+
+    num_labels = int(dataset_cfg["num_labels"])
 
     candidates: List[Dict[str, Any]] = dataset_cfg.get("candidates", [])
 
@@ -148,10 +300,6 @@ def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
         ]
 
     min_text_length = int(processing_cfg.get("min_text_length", 5))
-
-    max_train_samples = processing_cfg.get("max_train_samples")
-    max_dev_samples = processing_cfg.get("max_dev_samples")
-    max_test_samples = processing_cfg.get("max_test_samples")
 
     train_name = split_cfg.get("train_name", "train")
     dev_name = split_cfg.get("dev_name", None)
@@ -198,13 +346,13 @@ def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
                 raw_train = train_dev["train"]
                 raw_dev = train_dev["test"]
 
+            print("Converting Hugging Face splits to standard DataFrames...")
             train_df = convert_standard_split(
                 raw_train,
                 text_column=text_column,
                 label_column=label_column,
                 label_offset=label_offset,
                 min_text_length=min_text_length,
-                max_samples=max_train_samples,
             )
 
             dev_df = convert_standard_split(
@@ -213,7 +361,6 @@ def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
                 label_column=label_column,
                 label_offset=label_offset,
                 min_text_length=min_text_length,
-                max_samples=max_dev_samples,
             )
 
             test_df = convert_standard_split(
@@ -222,19 +369,46 @@ def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
                 label_column=label_column,
                 label_offset=label_offset,
                 min_text_length=min_text_length,
-                max_samples=max_test_samples,
             )
 
-            validate_label_range(train_df, "train", num_labels=int(dataset_cfg["num_labels"]))
-            validate_label_range(dev_df, "dev", num_labels=int(dataset_cfg["num_labels"]))
-            validate_label_range(test_df, "test", num_labels=int(dataset_cfg["num_labels"]))
+            validate_label_range(train_df, "train_raw", num_labels=num_labels)
+            validate_label_range(dev_df, "dev_raw", num_labels=num_labels)
+            validate_label_range(test_df, "test_raw", num_labels=num_labels)
+
+            print("=" * 80)
+            print("Raw split label distributions before sampling")
+            print("=" * 80)
+            print_label_distribution(train_df, "train_raw", num_labels)
+            print_label_distribution(dev_df, "dev_raw", num_labels)
+            print_label_distribution(test_df, "test_raw", num_labels)
+
+            print("=" * 80)
+            print(f"Applying sampling strategy: {sampling_cfg.get('strategy', 'full')}")
+            print("=" * 80)
+
+            train_df = sample_dataframe(train_df, "train", sampling_cfg, num_labels)
+            dev_df = sample_dataframe(dev_df, "dev", sampling_cfg, num_labels)
+            test_df = sample_dataframe(test_df, "test", sampling_cfg, num_labels)
+
+            validate_label_range(train_df, "train", num_labels=num_labels)
+            validate_label_range(dev_df, "dev", num_labels=num_labels)
+            validate_label_range(test_df, "test", num_labels=num_labels)
+
+            stats = build_dataset_stats(
+                train_df=train_df,
+                dev_df=dev_df,
+                test_df=test_df,
+                num_labels=num_labels,
+                selected_source=candidate["hf_name"],
+                sampling_cfg=sampling_cfg,
+            )
 
             print("=" * 80)
             print("Amazon MARC data preparation succeeded.")
             print(f"Selected source: {candidate['hf_name']}")
             print("=" * 80)
 
-            return train_df, dev_df, test_df
+            return train_df, dev_df, test_df, stats
 
         except Exception as e:
             last_error = e
@@ -251,35 +425,22 @@ def prepare_amazon_marc(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
     )
 
 
-def validate_label_range(df: pd.DataFrame, split_name: str, num_labels: int) -> None:
-    """Validate labels are within [0, num_labels - 1]."""
-    if df.empty:
-        raise ValueError(f"{split_name} split is empty.")
-
-    min_label = int(df["label"].min())
-    max_label = int(df["label"].max())
-
-    if min_label < 0 or max_label >= num_labels:
-        raise ValueError(
-            f"Invalid label range in {split_name}: "
-            f"min={min_label}, max={max_label}, expected [0, {num_labels - 1}]"
-        )
-
-
 def save_standard_dataset(
     train_df: pd.DataFrame,
     dev_df: pd.DataFrame,
     test_df: pd.DataFrame,
     output_dir: str,
     label_mapping: Dict[str, int],
+    dataset_stats: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Save train/dev/test CSV files and label mapping."""
+    """Save train/dev/test CSV files, label mapping, and dataset statistics."""
     out_dir = ensure_dir(output_dir)
 
     train_path = out_dir / "train.csv"
     dev_path = out_dir / "dev.csv"
     test_path = out_dir / "test.csv"
     label_path = out_dir / "label_mapping.json"
+    stats_path = out_dir / "dataset_stats.json"
 
     train_df.to_csv(train_path, index=False, encoding="utf-8")
     dev_df.to_csv(dev_path, index=False, encoding="utf-8")
@@ -288,10 +449,20 @@ def save_standard_dataset(
     with label_path.open("w", encoding="utf-8") as f:
         json.dump(label_mapping, f, ensure_ascii=False, indent=2)
 
+    if dataset_stats is not None:
+        with stats_path.open("w", encoding="utf-8") as f:
+            json.dump(dataset_stats, f, ensure_ascii=False, indent=2)
+
+    print("=" * 80)
+    print("Saved standardized dataset")
+    print("=" * 80)
     print(f"Saved train: {train_path} ({len(train_df):,} rows)")
     print(f"Saved dev:   {dev_path} ({len(dev_df):,} rows)")
     print(f"Saved test:  {test_path} ({len(test_df):,} rows)")
     print(f"Saved label mapping: {label_path}")
+
+    if dataset_stats is not None:
+        print(f"Saved dataset stats: {stats_path}")
 
 
 def get_label_mapping_for_amazon_marc() -> Dict[str, int]:

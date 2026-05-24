@@ -48,7 +48,7 @@ def main():
     config = load_yaml_config(str(config_path))
 
     if args.dataset == "amazon_marc":
-        train_df, dev_df, test_df = prepare_amazon_marc(config)
+        train_df, dev_df, test_df, dataset_stats = prepare_amazon_marc(config)
         label_mapping = get_label_mapping_for_amazon_marc()
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
@@ -61,6 +61,7 @@ def main():
         test_df=test_df,
         output_dir=str(output_dir),
         label_mapping=label_mapping,
+        dataset_stats=dataset_stats,
     )
 
 
